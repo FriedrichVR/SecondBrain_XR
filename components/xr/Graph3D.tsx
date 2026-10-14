@@ -140,11 +140,43 @@ export default function Graph3D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph]);
 
+  // Focus chain: hovering or pinning a node lights its whole root path so the
+  // JSON hierarchy reads as a breadcrumb instead of a cloud.
+  const focusId = hoveredId ?? selectedId;
+  const chain = useMemo(() => {
+    const set = new Set<string>();
+    let cur = focusId ? byId.get(focusId) : undefined;
+    while (cur) {
+      set.add(cur.id);
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    return set;
+  }, [byId, focusId]);
+
   const lineGeo = useMemo(() => {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(Math.max(links.length * 6, 6)), 3));
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(Math.max(links.length * 6, 6)), 3));
     return g;
   }, [links.length]);
+
+  // Edge colours, baked per link: the focus path glows white, everything else
+  // stays dim indigo. One buffer update per focus change, zero per-frame cost.
+  const EDGE_BASE = useMemo(() => new THREE.Color('#5b5fd6'), []);
+  const EDGE_PATH = useMemo(() => new THREE.Color('#ffffff'), []);
+  useEffect(() => {
+    const attr = lineGeo.getAttribute('color') as THREE.BufferAttribute;
+    for (let i = 0; i < links.length; i++) {
+      const onPath = chain.has(links[i].source) && chain.has(links[i].target);
+      const c = onPath ? EDGE_PATH : EDGE_BASE;
+      attr.setXYZ(i * 2, c.r, c.g, c.b);
+      attr.setXYZ(i * 2 + 1, c.r, c.g, c.b);
+    }
+    attr.needsUpdate = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lineGeo, links, chain]);
+
+  useEffect(() => () => lineGeo.dispose(), [lineGeo]);
 
   const byIdRef = useRef(byId);
   byIdRef.current = byId;
@@ -198,9 +230,10 @@ export default function Graph3D({
 
       <lineSegments geometry={lineGeo} frustumCulled={false} raycast={() => null}>
         <lineBasicMaterial
-          color="#a78bfa"
+          color="#ffffff"
+          vertexColors
           transparent
-          opacity={0.28}
+          opacity={0.35}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
@@ -213,6 +246,7 @@ export default function Graph3D({
           sizeScale={sizeScale}
           hovered={hoveredId === n.id}
           selected={selectedId === n.id}
+          spotlight={chain.size === 0 || chain.has(n.id)}
           onToggle={onToggle}
           onHover={onHover}
           onSelect={onSelect}

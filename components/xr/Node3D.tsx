@@ -3,9 +3,10 @@
 import { memo, Suspense, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Text, Billboard } from '@react-three/drei';
-import { Interactive } from '@react-three/xr';
+import { Interactive, type XRController, type XRInteractionEvent } from '@react-three/xr';
 import { ThreeEvent, useFrame } from '@react-three/fiber';
 import SceneErrorBoundary from './SceneErrorBoundary';
+import { pulse } from '@/utils/haptics';
 import type { GraphNode } from '@/utils/jsonToGraph';
 import { NODE_COLORS } from '@/utils/jsonToGraph';
 
@@ -15,6 +16,8 @@ interface Props {
   sizeScale: number;
   hovered: boolean;
   selected: boolean;
+  /** False when another subtree has the focus — node renders dimmed. */
+  spotlight: boolean;
   onToggle: (id: string) => void;
   onHover: (node: GraphNode | null) => void;
   onSelect: (node: GraphNode) => void;
@@ -27,7 +30,7 @@ const sphereGeo = new THREE.SphereGeometry(1, 16, 16);
 const orbitGeo = new THREE.TorusGeometry(1, 0.008, 4, 48);
 const tmpVec = new THREE.Vector3();
 
-function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onSelect, onDrag }: Props) {
+function Node3DImpl({ node, sizeScale, hovered, selected, spotlight, onToggle, onHover, onSelect, onDrag }: Props) {
   const groupRef = useRef<THREE.Group>(null);
   const coreRef = useRef<THREE.Mesh>(null);
   const orbitA = useRef<THREE.Group>(null);
@@ -43,10 +46,20 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
   // Hierarchy reads at a glance: bigger sphere = deeper branch with more children
   const baseRadius = useMemo(() => {
     const byKind = isBranch ? 0.2 : 0.11;
-    const byDepth = node.depth === 0 ? 1.7 : 1;
+    const byDepth = node.depth === 0 ? 1.7 : node.depth === 1 ? 1.25 : 1;
     const byFanout = isBranch ? 1 + Math.min(node.childIds.length, 12) * 0.035 : 1;
     return byKind * byDepth * byFanout * sizeScale;
   }, [isBranch, node.depth, node.childIds.length, sizeScale]);
+
+  // Outside the focus chain everything dims toward the background so the eye
+  // follows the highlighted path instead of the whole cloud.
+  const dim = spotlight ? 1 : 0.32;
+
+  // Tags always face the observer (Billboard) and follow a depth budget:
+  // root + hover/selected always, then progressively deeper levels, culled by
+  // camera distance so a 700-node cloud doesn't pay for 700 SDF labels.
+  const showLabel = node.depth <= 3 || hovered || selected;
+  const fontSize = (node.depth === 0 ? 0.22 : node.depth === 1 ? 0.16 : 0.12) * Math.max(sizeScale, 0.6);
 
   // Persistent materials — never recreated on hover (no shader recompiles)
   const coreMat = useMemo(
@@ -124,9 +137,10 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
     const target = hovered || selected ? 1.4 : 1;
     scaleRef.current += (target - scaleRef.current) * Math.min(1, dt * 12);
     if (coreRef.current) coreRef.current.scale.setScalar(baseRadius * scaleRef.current);
+    coreMat.emissiveIntensity = (hovered || selected ? 1.5 : isBranch ? 0.85 : 0.6) * dim;
 
     // Orbits fade out as the camera approaches, and never pop back in
-    const orbitFade = showOrbits ? Math.min(1, Math.max(0, (d - baseRadius * 2.4) / (baseRadius * 3))) : 0;
+    const orbitFade = (showOrbits ? Math.min(1, Math.max(0, (d - baseRadius * 2.4) / (baseRadius * 3))) : 0) * dim;
     if (orbitA.current) {
       orbitA.current.scale.setScalar(baseRadius * 2.6 * orbitFade);
       orbitA.current.rotation.y += dt * 0.5;
@@ -141,13 +155,15 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
       orbitMatB.opacity = (hovered || selected ? 0.28 : 0.16) * orbitFade;
     }
 
-    // Labels: tighter budget in dense graphs, and never when the camera is inside
-    if (labelRef.current) labelRef.current.visible = d > 1.4 && (sizeScale > 0.7 || hovered || selected || node.depth === 0);
+    // Labels always face the observer via Billboard; culled only when the
+    // camera is basically inside them or too far to read anything.
+    if (labelRef.current) labelRef.current.visible = d > 0.45 && d < 12;
     if (ringRef.current) ringRef.current.visible = d > 0.7 && d < 9;
   });
 
   // Shared by the desktop pointer path and the XR controller ray
-  const activate = () => {
+  const activate = (controller?: XRController) => {
+    pulse(controller, 0.8, 40);
     if (isBranch) onToggle(node.id);
     onSelect(node);
   };
@@ -162,8 +178,6 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
     e.stopPropagation();
     onDrag(node.id, e.point);
   };
-
-  const showLabel = node.depth <= 1 || hovered || selected;
 
   return (
     <group ref={groupRef} position={[node.x ?? 0, node.y ?? 0, node.z ?? 0]}>
@@ -187,7 +201,14 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
         wrapper the nodes responded on desktop and did nothing in VR.
         Trigger = select (expand/collapse), grip stays free for the rig.
       */}
-      <Interactive onSelectStart={activate} onHover={() => onHover(node)} onBlur={() => onHover(null)}>
+      <Interactive
+        onSelectStart={(e: XRInteractionEvent) => activate(e.target)}
+        onHover={(e: XRInteractionEvent) => {
+          pulse(e.target, 0.25, 15);
+          onHover(node);
+        }}
+        onBlur={() => onHover(null)}
+      >
         <mesh
           ref={coreRef}
           geometry={sphereGeo}
@@ -227,10 +248,10 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
             <Suspense fallback={null}>
               <SceneErrorBoundary>
                 <Text
-                  fontSize={node.depth === 0 ? 0.2 : 0.14}
+                  fontSize={fontSize}
                   maxWidth={2.6}
                   textAlign="center"
-                  color={hovered || selected ? '#ffffff' : color}
+                  color={hovered || selected ? '#ffffff' : spotlight ? color : '#52525b'}
                   anchorX="center"
                   anchorY="middle"
                   outlineWidth={0.012}

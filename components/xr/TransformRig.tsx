@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import * as THREE from 'three';
-import { useFrame } from '@react-three/fiber';
-import { useXREvent, type XRController } from '@react-three/xr';
+import { useFrame, useThree } from '@react-three/fiber';
+import { useXREvent, useXR, type XRController } from '@react-three/xr';
 
 export interface TransformApi {
   reset: () => void;
@@ -21,12 +21,20 @@ interface Props {
 const MIN_SCALE = 0.15;
 const MAX_SCALE = 6;
 const UP = new THREE.Vector3(0, 1, 0);
+// Standard XR gamepad mapping: axes[0,1] touchpad, axes[2,3] thumbstick.
+const STICK_DEADZONE = 0.18;
+const MOVE_SPEED = 2.4; // m/s at full deflection
+const TURN_SPEED = 1.5; // rad/s at full deflection
+const ZOOM_RATE = 1.1; // exp scale per second
 
 const tmpA = new THREE.Vector3();
 const tmpB = new THREE.Vector3();
 const tmpVec = new THREE.Vector3();
 const tmpQuat = new THREE.Quaternion();
 const tmpOffset = new THREE.Vector3();
+const tmpFwd = new THREE.Vector3();
+const tmpRight = new THREE.Vector3();
+const tmpCamQuat = new THREE.Quaternion();
 
 function clampScale(v: number) {
   return THREE.MathUtils.clamp(v, MIN_SCALE, MAX_SCALE);
@@ -50,6 +58,10 @@ function clampScale(v: number) {
  */
 export default function TransformRig({ children, apiRef, onGrabChange }: Props) {
   const groupRef = useRef<THREE.Group>(null);
+  const camera = useThree((s) => s.camera);
+  const presenting = useXR((s) => s.isPresenting);
+  // Smoothed stick deflection per hand, so release doesn't snap
+  const stick = useRef({ left: { x: 0, y: 0 }, right: { x: 0, y: 0 } });
 
   const target = useRef({
     pos: new THREE.Vector3(0, 0, 0),
@@ -173,7 +185,44 @@ export default function TransformRig({ children, apiRef, onGrabChange }: Props) 
     [],
   );
 
-  useFrame((_, dt) => {
+  /** Continuous thumbstick transform, applied only while a session runs. */
+  const applySticks = (dt: number) => {
+    if (!presenting) return;
+    const t = target.current;
+    const st = stick.current;
+    const k = 1 - Math.exp(-dt * 10);
+
+    // Camera yaw on the ground plane, so "push up" is always "away from me"
+    camera.getWorldQuaternion(tmpCamQuat);
+    tmpFwd.set(0, 0, -1).applyQuaternion(tmpCamQuat);
+    tmpFwd.y = 0;
+    if (tmpFwd.lengthSq() < 1e-6) tmpFwd.set(0, 0, -1);
+    tmpFwd.normalize();
+    tmpRight.crossVectors(tmpFwd, UP).negate(); // camera-right on the ground
+
+    const read = (hand: 'left' | 'right') => {
+      const gp = controllers.current.get(hand)?.inputSource?.gamepad;
+      const ax = gp?.axes;
+      if (!ax || ax.length < 4) return { x: 0, y: 0 };
+      const dz = (v: number) => (Math.abs(v) < STICK_DEADZONE ? 0 : (v - Math.sign(v) * STICK_DEADZONE) / (1 - STICK_DEADZONE));
+      return { x: dz(ax[2] ?? 0), y: dz(ax[3] ?? 0) };
+    };
+
+    const L = read('left');
+    st.left.x += (L.x - st.left.x) * k;
+    st.left.y += (L.y - st.left.y) * k;
+    t.pos
+      .addScaledVector(tmpRight, st.left.x * MOVE_SPEED * dt)
+      .addScaledVector(tmpFwd, -st.left.y * MOVE_SPEED * dt);
+
+    const R = read('right');
+    st.right.x += (R.x - st.right.x) * k;
+    st.right.y += (R.y - st.right.y) * k;
+    if (st.right.x !== 0) t.quat.premultiply(tmpQuat.setFromAxisAngle(UP, -st.right.x * TURN_SPEED * dt));
+    if (st.right.y !== 0) t.scale.setScalar(clampScale(t.scale.x * Math.exp(-st.right.y * ZOOM_RATE * dt)));
+  };
+
+  useFrame((state, dt) => {
     const g = groupRef.current;
     if (!g) return;
     const t = target.current;
@@ -201,6 +250,11 @@ export default function TransformRig({ children, apiRef, onGrabChange }: Props) 
     } else if (hands.length === 1) {
       const [, v] = hands[0];
       t.pos.copy(o.pos).add(tmpB.copy(v).sub(o.hand));
+    } else {
+      // No grip held: thumbsticks drive the transform continuously.
+      // Left stick moves on the ground plane relative to where you look,
+      // right stick X turns, right stick Y zooms. Trigger stays free.
+      applySticks(dt);
     }
 
     const k = 1 - Math.exp(-dt * 18);

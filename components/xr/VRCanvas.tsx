@@ -119,7 +119,7 @@ export default function VRCanvas(props: Props) {
               <TransformRig apiRef={rigApi} onGrabChange={setGrabbing}>
                 <Graph3D {...props} />
               </TransformRig>
-              <VRHud apiRef={rigApi} />
+              <VRHud apiRef={rigApi} grabbing={grabbing} />
               <OrbitControls
                 makeDefault
                 enableDamping
@@ -186,7 +186,7 @@ export default function VRCanvas(props: Props) {
           </p>
         )}
         <p className="rounded-full bg-black/50 px-3 py-1 text-[10px] uppercase tracking-[0.18em] text-zinc-500 backdrop-blur">
-          point · trigger · grip-drag
+          trigger select · grip move · sticks transform
         </p>
       </div>
     </div>
