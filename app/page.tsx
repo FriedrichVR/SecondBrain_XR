@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { Expand, Shrink, X } from 'lucide-react';
 import JsonUploader from '@/components/ui/JsonUploader';
 import JsonTreeView from '@/components/ui/JsonTreeView';
+import SceneErrorBoundary from '@/components/xr/SceneErrorBoundary';
 import {
   jsonToGraph,
   toggleNode,
@@ -107,18 +108,31 @@ export default function Home() {
 
       {/* Main stage: 3D + docked inspector */}
       <section className="mt-5 grid gap-3 lg:grid-cols-[1fr_264px]">
-        <VRCanvas
-          graph={graph}
-          hoveredId={hovered?.id ?? null}
-          selectedId={selected?.id ?? null}
-          onToggle={toggle}
-          onHover={setHovered}
-          onSelect={setSelected}
-          onDragNode={drag}
-          onClearSelection={clearSelection}
-          onBudget={onBudget}
-          budget={budget}
-        />
+        {/* Last-resort guard: if the 3D stage itself throws while mounting, the
+            dashboard stays usable and the reason is shown in place. */}
+        <SceneErrorBoundary
+          resetKey={label}
+          fallback={(err) => (
+            <div className="flex h-[560px] flex-col items-center justify-center gap-2 rounded-2xl border border-rose-500/20 bg-rose-500/[0.06] px-6 text-center md:h-[640px]">
+              <p className="text-xs uppercase tracking-[0.2em] text-rose-300/70">3D stage failed</p>
+              <p className="max-w-md break-words font-mono text-[11px] leading-relaxed text-zinc-400">{err.message}</p>
+            </div>
+          )}
+        >
+          <VRCanvas
+            graph={graph}
+            hoveredId={hovered?.id ?? null}
+            selectedId={selected?.id ?? null}
+            onToggle={toggle}
+            onHover={setHovered}
+            onSelect={setSelected}
+            onDragNode={drag}
+            onClearSelection={clearSelection}
+            onBudget={onBudget}
+            budget={budget}
+            resetKey={label}
+          />
+        </SceneErrorBoundary>
 
         {/* Inspector — replaces the old floating HTML tooltip */}
         <aside className="flex flex-col gap-4 rounded-2xl border border-white/10 bg-black/40 p-4">

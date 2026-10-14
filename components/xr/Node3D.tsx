@@ -1,9 +1,10 @@
 'use client';
 
-import { memo, useEffect, useMemo, useRef } from 'react';
+import { memo, Suspense, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Text, Billboard } from '@react-three/drei';
 import { ThreeEvent, useFrame } from '@react-three/fiber';
+import SceneErrorBoundary from './SceneErrorBoundary';
 import type { GraphNode } from '@/utils/jsonToGraph';
 import { NODE_COLORS } from '@/utils/jsonToGraph';
 
@@ -203,21 +204,30 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
 
       {showLabel && (
         <group ref={labelRef}>
+          {/* The label gets its own Suspense + boundary on purpose. drei's Text
+              loads a font and a WASM binary asynchronously; while it is pending
+              it suspends. Without a local boundary that suspension propagates
+              to the <Suspense fallback={null}> wrapping the whole scene, which
+              blanks the entire graph instead of just this label. */}
           <Billboard position={[0, baseRadius + 0.45, 0]}>
-            <Text
-              fontSize={node.depth === 0 ? 0.2 : 0.14}
-              maxWidth={2.6}
-              textAlign="center"
-              color={hovered || selected ? '#ffffff' : color}
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.012}
-              outlineColor="#000000"
-            >
-              {node.key}
-              {node.value !== undefined ? `: ${node.value.slice(0, 20)}` : ''}
-              {isBranch && !node.expanded ? `  +${node.childIds.length}` : ''}
-            </Text>
+            <Suspense fallback={null}>
+              <SceneErrorBoundary>
+                <Text
+                  fontSize={node.depth === 0 ? 0.2 : 0.14}
+                  maxWidth={2.6}
+                  textAlign="center"
+                  color={hovered || selected ? '#ffffff' : color}
+                  anchorX="center"
+                  anchorY="middle"
+                  outlineWidth={0.012}
+                  outlineColor="#000000"
+                >
+                  {node.key}
+                  {node.value !== undefined ? `: ${node.value.slice(0, 20)}` : ''}
+                  {isBranch && !node.expanded ? `  +${node.childIds.length}` : ''}
+                </Text>
+              </SceneErrorBoundary>
+            </Suspense>
           </Billboard>
         </group>
       )}
