@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+  background: #000000;
+  color: #e4e4e7;
+}
+
+body {
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Space background behind the canvas area */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(1200px 700px at 50% -10%, rgba(120, 90, 220, 0.09), transparent 60%);
+  z-index: 0;
+}
+
+main {
+  position: relative;
+  z-index: 1;
+}
+
+canvas {
+  touch-action: none;
+}
+
+::selection {
+  background: rgba(167, 139, 250, 0.3);
+}
+
+/* Slim dark scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
