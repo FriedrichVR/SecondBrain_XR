@@ -1,12 +1,14 @@
 'use client';
 
-import { Suspense, useCallback, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { Canvas } from '@react-three/fiber';
-import { XR, Controllers, VRButton } from '@react-three/xr';
+import { Canvas, useThree } from '@react-three/fiber';
+import { XR, Controllers, VRButton, useXR } from '@react-three/xr';
 import { OrbitControls, Stars } from '@react-three/drei';
 import { Headset, TriangleAlert } from 'lucide-react';
 import SceneErrorBoundary from './SceneErrorBoundary';
+import TransformRig, { type TransformApi } from './TransformRig';
+import VRHud from './VRHud';
 import Graph3D from './Graph3D';
 import { useCapabilities, summarise } from '@/utils/webxrProbe';
 import type { GraphData, GraphNode } from '@/utils/jsonToGraph';
@@ -25,6 +27,34 @@ interface Props {
   budget: { shown: number; total: number } | null;
   /** Identifies the current dataset so a failed scene retries on the next load. */
   resetKey: string;
+  /** Hands the transform API up so the page can drive a desktop reset. */
+  onRigReady?: (api: React.RefObject<TransformApi | null>) => void;
+}
+
+/**
+ * Keeps the framebuffer opaque black in VR and transparent in AR.
+ *
+ * Passthrough is not a post-processing trick: the AR session composites what
+ * the headset cameras see behind the drawing buffer, which only works if the
+ * buffer actually has a transparent background.
+ */
+function SessionSurface() {
+  const session = useXR((s) => s.session);
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+
+  useEffect(() => {
+    const isAR = (session as { mode?: string } | null)?.mode === 'immersive-ar';
+    if (isAR) {
+      scene.background = null;
+      gl.setClearColor(new THREE.Color('#000000'), 0);
+    } else {
+      scene.background = new THREE.Color('#000000');
+      gl.setClearColor(new THREE.Color('#000000'), 1);
+    }
+  }, [session, gl, scene]);
+
+  return null;
 }
 
 /** Neutralises the library's default inline button placement. */
@@ -43,6 +73,11 @@ export default function VRCanvas(props: Props) {
   const { onClearSelection, budget, resetKey } = props;
   const caps = useCapabilities();
   const [sceneError, setSceneError] = useState<string | null>(null);
+  const [grabbing, setGrabbing] = useState(false);
+
+  // Shared between the in-headset HUD and the desktop reset button
+  const rigApi = useRef<TransformApi | null>(null);
+  props.onRigReady?.(rigApi);
 
   const onSceneError = useCallback((e: Error) => setSceneError(e.message), []);
 
@@ -55,9 +90,10 @@ export default function VRCanvas(props: Props) {
         // Quest renders through a multisampled, per-eye pipeline; a high dpr
         // here buys nothing and makes context creation the failure point.
         dpr={1}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        // Required for passthrough: the AR session composites the real room
+        // behind a transparent framebuffer.
+        gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
         camera={{ position: [0, 1.6, 7], fov: 60, near: 0.1, far: 300 }}
-        onCreated={({ gl }) => gl.setClearColor(new THREE.Color('#000000'))}
         onPointerMissed={onClearSelection}
         fallback={
           <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
@@ -66,7 +102,6 @@ export default function VRCanvas(props: Props) {
           </div>
         }
       >
-        <color attach="background" args={['#000000']} />
         <ambientLight intensity={0.55} />
         <pointLight position={[5, 7, 5]} intensity={55} />
         <pointLight position={[-5, -3, -5]} intensity={18} color="#8b5cf6" />
@@ -74,11 +109,17 @@ export default function VRCanvas(props: Props) {
         <SceneErrorBoundary onError={onSceneError}>
           <Suspense fallback={null}>
             <XR referenceSpace="local-floor" frameRate={90}>
+              {/* Must live inside <XR>: it reads the session to decide between
+                  an opaque VR framebuffer and a transparent AR one. */}
+              <SessionSurface />
               {/* Controllers only: <Hands> injects an Oculus hand model that
                   needs a granted hand-tracking session and is not needed for
                   the trigger + grip interaction this app is built around. */}
               <Controllers rayMaterial={{ color: '#a78bfa' }} />
-              <Graph3D {...props} />
+              <TransformRig apiRef={rigApi} onGrabChange={setGrabbing}>
+                <Graph3D {...props} />
+              </TransformRig>
+              <VRHud apiRef={rigApi} />
               <OrbitControls
                 makeDefault
                 enableDamping

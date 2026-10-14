@@ -3,6 +3,7 @@
 import { memo, Suspense, useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { Text, Billboard } from '@react-three/drei';
+import { Interactive } from '@react-three/xr';
 import { ThreeEvent, useFrame } from '@react-three/fiber';
 import SceneErrorBoundary from './SceneErrorBoundary';
 import type { GraphNode } from '@/utils/jsonToGraph';
@@ -145,10 +146,15 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
     if (ringRef.current) ringRef.current.visible = d > 0.7 && d < 9;
   });
 
-  const handleClick = (e: ThreeEvent<MouseEvent>) => {
-    e.stopPropagation();
+  // Shared by the desktop pointer path and the XR controller ray
+  const activate = () => {
     if (isBranch) onToggle(node.id);
     onSelect(node);
+  };
+
+  const handleClick = (e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
+    activate();
   };
 
   const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
@@ -175,26 +181,34 @@ function Node3DImpl({ node, sizeScale, hovered, selected, onToggle, onHover, onS
         </group>
       )}
 
-      <mesh
-        ref={coreRef}
-        geometry={sphereGeo}
-        material={coreMat}
-        scale={baseRadius}
-        onClick={handleClick}
-        onPointerOver={(e) => {
-          e.stopPropagation();
-          onHover(node);
-        }}
-        onPointerOut={() => onHover(null)}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          dragging.current = true;
-        }}
-        onPointerUp={() => {
-          dragging.current = false;
-        }}
-        onPointerMove={handlePointerMove}
-      />
+      {/*
+        `Interactive` is what actually wires the XR controller ray to this node.
+        The R3F pointer props below only fire for mouse/touch, so without this
+        wrapper the nodes responded on desktop and did nothing in VR.
+        Trigger = select (expand/collapse), grip stays free for the rig.
+      */}
+      <Interactive onSelectStart={activate} onHover={() => onHover(node)} onBlur={() => onHover(null)}>
+        <mesh
+          ref={coreRef}
+          geometry={sphereGeo}
+          material={coreMat}
+          scale={baseRadius}
+          onClick={handleClick}
+          onPointerOver={(e) => {
+            e.stopPropagation();
+            onHover(node);
+          }}
+          onPointerOut={() => onHover(null)}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            dragging.current = true;
+          }}
+          onPointerUp={() => {
+            dragging.current = false;
+          }}
+          onPointerMove={handlePointerMove}
+        />
+      </Interactive>
 
       {selected && (
         <mesh ref={ringRef} material={ringMat} raycast={() => null}>

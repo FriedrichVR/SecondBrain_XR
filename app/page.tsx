@@ -3,10 +3,11 @@
 import { useCallback, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import * as THREE from 'three';
-import { Expand, Shrink, X } from 'lucide-react';
+import { Expand, Shrink, RotateCcw, X } from 'lucide-react';
 import JsonUploader from '@/components/ui/JsonUploader';
 import JsonTreeView from '@/components/ui/JsonTreeView';
 import SceneErrorBoundary from '@/components/xr/SceneErrorBoundary';
+import type { TransformApi } from '@/components/xr/TransformRig';
 import {
   jsonToGraph,
   toggleNode,
@@ -46,6 +47,10 @@ export default function Home() {
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [keys, setKeys] = useState(Object.keys(DEFAULT_DATA).length);
   const [budget, setBudget] = useState<{ shown: number; total: number } | null>(null);
+  // Ref, not state: the transform API lives inside the R3F/XR tree and we only
+  // ever call methods on it, never read render-relevant data from it.
+  const [rigApi, setRigApi] = useState<React.RefObject<TransformApi | null> | null>(null);
+  const resetView = useCallback(() => rigApi?.current?.reset(), [rigApi]);
   const onBudget = useCallback((shown: number, total: number) => {
     setBudget((b) => (b && b.shown === shown && b.total === total ? b : { shown, total }));
   }, []);
@@ -88,22 +93,30 @@ export default function Home() {
           <span className="h-px w-8 bg-white/15" />
           <span className="text-[11px] uppercase tracking-[0.2em] text-zinc-600">WebXR JSON Graph</span>
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={expandAll}
-            className="rounded-md p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
-            title="Expand all"
-          >
-            <Expand className="h-3.5 w-3.5" />
-          </button>
-          <button
-            onClick={collapseAll}
-            className="rounded-md p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
-            title="Collapse all"
-          >
-            <Shrink className="h-3.5 w-3.5" />
-          </button>
-        </div>
+<div className="flex items-center gap-1">
+            <button
+              onClick={expandAll}
+              className="rounded-md p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+              title="Expand all"
+            >
+              <Expand className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={collapseAll}
+              className="rounded-md p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+              title="Collapse all"
+            >
+              <Shrink className="h-3.5 w-3.5" />
+            </button>
+            <span className="mx-1 h-3.5 w-px bg-white/10" />
+            <button
+              onClick={resetView}
+              className="rounded-md p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-zinc-200"
+              title="Reset view (also on the in-headset HUD)"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+          </div>
       </header>
 
       {/* Main stage: 3D + docked inspector */}
@@ -131,6 +144,7 @@ export default function Home() {
             onBudget={onBudget}
             budget={budget}
             resetKey={label}
+            onRigReady={setRigApi}
           />
         </SceneErrorBoundary>
 
