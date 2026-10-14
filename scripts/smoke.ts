@@ -6,6 +6,7 @@
  */
 import { SAMPLES } from '../utils/samples.ts';
 import { jsonToGraph, toggleNode, setAllExpanded, visibleSubgraph } from '../utils/jsonToGraph.ts';
+import { buildCards, layoutTree, normalizeTree, bboxOf, TREE } from '../utils/treeLayout.ts';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -65,21 +66,68 @@ for (const [name, payload] of Object.entries(SAMPLES)) {
   const visIds = new Set(visible.nodes.map((n) => n.id));
   check(`${name}: visible links reference visible nodes`, visible.links.every((l) => visIds.has(l.source) && visIds.has(l.target)));
 
-  // 7. simulation actually spreads nodes out (no NaN, no degenerate stack)
-  const finite = visible.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y) && Number.isFinite(n.z));
-  check(`${name}: finite coordinates`, finite);
+  // 7. tidy-tree layout invariants: columns from depth, no overlaps, parents
+  //    centred over their children, everything inside the view volume
+  const { cards, byId: cardById } = buildCards({ nodes, links });
+  const onlyBranches = cards.every((c) => ['object', 'array', 'root'].includes(c.node.type));
+  check(`${name}: only branches get cards`, onlyBranches);
+  const noCardForPrimitives = nodes
+    .filter((n) => !['object', 'array', 'root'].includes(n.type))
+    .every((n) => !cardById.has(n.id));
+  check(`${name}: primitives render as rows, not cards`, noCardForPrimitives);
 
-  // The scene relies on a dense cluster, not a hollow shell: the p50 distance
-  // must be a meaningful fraction of the p90, otherwise the camera ends up
-  // inside an empty bubble.
-  const dists = visible.nodes
-    .map((n) => Math.hypot(n.x ?? 0, n.y ?? 0, n.z ?? 0))
-    .sort((a, b) => a - b);
-  const p50 = dists[Math.floor(dists.length * 0.5)] ?? 0;
-  const p90 = dists[Math.min(dists.length - 1, Math.floor(dists.length * 0.9))] ?? 0;
-  const solidity = p90 > 0 ? p50 / p90 : 0;
-  check(`${name}: cluster is solid (p50/p90 >= 0.35)`, solidity >= 0.35, `p50=${p50.toFixed(2)} p90=${p90.toFixed(2)}`);
-  check(`${name}: cluster framed for camera`, p90 < 12, `p90=${p90.toFixed(2)}`);
+  const raw = layoutTree(cards, cardById);
+  const { layout, scale } = normalizeTree(raw);
+  check(`${name}: normalize scale sane`, scale > 0 && scale <= 2, `s=${scale.toFixed(3)}`);
+  const finiteLayout = Array.from(layout.values()).every((e) =>
+    Number.isFinite(e.x) && Number.isFinite(e.y) && Number.isFinite(e.z),
+  );
+  check(`${name}: layout coordinates finite`, finiteLayout);
+
+  // X strictly increases with depth (one column per level)
+  let monoX = true;
+  for (const c of cards) {
+    const e = layout.get(c.node.id);
+    for (const child of c.cardChildren) {
+      const ce = layout.get(child.id);
+      if (e && ce && !(ce.x > e.x)) monoX = false;
+    }
+  }
+  check(`${name}: child column is right of parent`, monoX);
+
+  // No two cards in the same column overlap: gap covers both half-heights.
+  // Compare in RAW units, where the slot guarantee holds.
+  const byCol = new Map<number, Array<{ y: number; h: number }>>();
+  for (const c of cards) {
+    const e = raw.get(c.node.id);
+    if (!e) continue;
+    const arr = byCol.get(c.node.depth) ?? [];
+    arr.push({ y: e.y, h: c.faceH });
+    byCol.set(c.node.depth, arr);
+  }
+  let noOverlap = true;
+  for (const items of byCol.values()) {
+    const sorted = [...items].sort((a, b) => a.y - b.y);
+    for (let i = 1; i < sorted.length; i++) {
+      const need = (sorted[i - 1].h + sorted[i].h) / 2 + TREE.gapMin - 1e-6;
+      if (sorted[i].y - sorted[i - 1].y < need) noOverlap = false;
+    }
+  }
+  check(`${name}: no vertical overlap in column`, noOverlap);
+
+  // Parents sit at the midpoint of their card-children
+  let centred = true;
+  for (const c of cards) {
+    const kids = c.cardChildren.map((k) => raw.get(k.id)).filter(Boolean) as Array<{ y: number }>;
+    if (kids.length === 0) continue;
+    const mid = (Math.min(...kids.map((k) => k.y)) + Math.max(...kids.map((k) => k.y))) / 2;
+    if (Math.abs((raw.get(c.node.id)?.y ?? mid) - mid) > 1e-6) centred = false;
+  }
+  check(`${name}: parents centred over children`, centred);
+
+  // Normalised tree fits a comfortable viewing volume
+  const box = bboxOf(Array.from(layout.values()));
+  check(`${name}: layout fits view height`, !!box && box.height <= 6.5, box ? `h=${box.height.toFixed(2)}` : 'empty');
 
   // 8. toggle contract
   const branch = nodes.find((n) => n.childIds.length > 0);
